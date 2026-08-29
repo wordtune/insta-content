@@ -1,0 +1,10 @@
+.env
+.env.bak.*
+state.db
+output/
+logs/
+__pycache__/
+*.pyc
+.venv/
+assets/products/*
+!assets/products/.gitkeep
