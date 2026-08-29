@@ -166,6 +166,6 @@ instagram:
 # ============================================================
 safety:
   # تا وقتی کاتالوگ کامل نشده، این را روی true نگه دارید.
-  dry_run: true
+  dry_run: false
   max_hashtags: 12
   max_caption_chars: 1500
