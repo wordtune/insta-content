@@ -163,11 +163,17 @@ class BufferClient:
     def create_post(self, *, channel_id: str, text: str,
                     image_urls: list[str] | None = None,
                     due_at: datetime | None = None,
-                    draft: bool = False) -> dict[str, Any]:
+                    draft: bool = False,
+                    service: str = "instagram",
+                    post_type: str = "post",
+                    alt_text: str = "") -> dict[str, Any]:
         """یک پست در صف بافر می‌گذارد.
 
         due_at داده شود → دقیقاً همان لحظه منتشر می‌شود (customScheduled).
         due_at ندهید      → به انتهای صف بافر اضافه می‌شود (addToQueue).
+
+        اینستاگرام حتماً نوع پست را می‌خواهد (post / story / reel) وگرنه
+        بافر درخواست را رد می‌کند.
         """
         post_input: dict[str, Any] = {
             "channelId": channel_id,
@@ -182,7 +188,17 @@ class BufferClient:
             post_input["mode"] = "addToQueue"
 
         if image_urls:
-            post_input["assets"] = [{"image": {"url": u}} for u in image_urls]
+            img_meta = {"altText": alt_text[:100]} if alt_text else None
+            post_input["assets"] = [
+                {"image": {"url": u, **({"metadata": img_meta} if img_meta else {})}}
+                for u in image_urls
+            ]
+
+        if (service or "").lower() == "instagram":
+            post_input["metadata"] = {
+                "instagram": {"type": post_type, "shouldShareToFeed": True}
+            }
+
         if draft:
             post_input["saveToDraft"] = True
 

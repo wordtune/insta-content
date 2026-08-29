@@ -73,6 +73,8 @@ def run_schedule(settings: Settings, *, count: int,
                 text=entry["caption"],
                 image_urls=urls,
                 due_at=entry["at"],
+                service=channel.get("service", "instagram"),
+                alt_text=entry.get("alt_text", ""),
             )
             entry["buffer_post_id"] = post.get("id")
             scheduled.append(entry)

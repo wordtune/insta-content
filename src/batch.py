@@ -88,6 +88,7 @@ def prepare_posts(settings: Settings, *, count: int, start: date,
             "n": i + 1, "post_id": post_id, "plan_key": plan_item["key"],
             "label": plan_item["label"], "type": media_type,
             "title": data.get("title", ""), "caption": data["caption"],
+            "alt_text": data.get("alt_text", ""),
             "images": images, "date": when, "at": post_datetime(settings, when),
             "when": f"{jalali.format_date(when)} ساعت {jalali.fa_digits(post_at)}",
         }
