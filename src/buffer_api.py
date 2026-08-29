@@ -24,6 +24,10 @@ class BufferError(RuntimeError):
     pass
 
 
+class BufferQuotaError(BufferError):
+    """صف بافر پر است — تلاش برای پست بعدی هم بی‌فایده است."""
+
+
 # --------------------------------------------------------------- پرس‌وجوها
 
 Q_ORGANIZATIONS = """
@@ -35,6 +39,14 @@ query GetOrganizations {
 Q_CHANNELS = """
 query GetChannels($input: ChannelsInput!) {
   channels(input: $input) { id name service timezone }
+}
+"""
+
+Q_SCHEDULED = """
+query GetScheduledPosts($input: PostsInput!) {
+  posts(input: $input) {
+    edges { node { id dueAt } }
+  }
 }
 """
 
@@ -158,6 +170,28 @@ class BufferClient:
                         "برای انتخاب دقیق، buffer.channel_name را در config.yaml بگذارید.", names)
         return insta[0]
 
+    # ---------- ظرفیت صف ----------
+
+    def scheduled_count(self, organization_id: str = "") -> int | None:
+        """چند پست همین حالا در صف بافر است.
+
+        پلن رایگان بافر سقف مشخصی دارد (معمولاً ۱۰ پست). اگر از قبل بدانیم چند
+        تا در صف است، به‌جای اینکه چند بار بی‌فایده تلاش کنیم و خطا بگیریم،
+        از همان اول فقط به اندازه‌ی ظرفیت آزاد پست می‌سازیم.
+
+        None یعنی نتوانستیم بشماریم — آن وقت محتاطانه جلو می‌رویم.
+        """
+        try:
+            data = self._gql(Q_SCHEDULED, {"input": {
+                "organizationId": self.organization_id(organization_id),
+                "filter": {"status": ["scheduled"]},
+            }})
+        except BufferError as e:
+            log.warning("شمارش صف بافر ممکن نشد: %s", e)
+            return None
+        edges = ((data.get("posts") or {}).get("edges")) or []
+        return len([e for e in edges if e.get("node")])
+
     # ---------- ساخت پست ----------
 
     def create_post(self, *, channel_id: str, text: str,
@@ -206,7 +240,12 @@ class BufferClient:
 
         if result.get("__typename") == "PostActionSuccess":
             return result.get("post") or {}
-        raise BufferError(result.get("message") or f"ساخت پست ناموفق بود: {result}")
+
+        msg = result.get("message") or f"ساخت پست ناموفق بود: {result}"
+        low = msg.lower()
+        if "limit reached" in low or "scheduled posts limit" in low:
+            raise BufferQuotaError(msg)
+        raise BufferError(msg)
 
     # ---------- بررسی سلامت ----------
 

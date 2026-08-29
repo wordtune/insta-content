@@ -14,7 +14,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from . import batch, jalali, llm
-from .buffer_api import BufferClient
+from .buffer_api import BufferClient, BufferQuotaError
 from .config import Settings
 from .storage import get_storage
 from .telegram import from_settings as telegram_from_settings
@@ -45,24 +45,56 @@ def run_schedule(settings: Settings, *, count: int,
     )
     log.info("کانال بافر: %s (%s)", channel.get("name"), channel.get("id"))
 
+    # ۲) ظرفیت صف را قبل از تولید محتوا بسنج — تولید محتوایی که جا ندارد
+    #    هم هزینه‌ی مدل را هدر می‌دهد هم گزارش را شلوغ می‌کند.
+    max_queue = int(buf_cfg.get("max_queue", 10) or 10)
+    in_queue = client.scheduled_count(buf_cfg.get("organization_id", "") or "")
+    queue_note = ""
+    if in_queue is not None:
+        free = max(0, max_queue - in_queue)
+        log.info("صف بافر: %d از %d پر است (%d جای خالی)", in_queue, max_queue, free)
+        if free == 0 and not dry:
+            msg = (f"صف بافر پر است ({in_queue} از {max_queue}). "
+                   "تا انتشار پست‌های فعلی، جای تازه‌ای باز نمی‌شود.")
+            log.warning(msg)
+            if tg.enabled:
+                tg.text(f"⏸ {msg}\n\nربات این هفته چیزی نساخت تا هزینه‌ی بی‌مورد ندهید.")
+            return {"count": 0, "scheduled": 0, "failed": 0, "dir": str(out_dir),
+                    "zip": "", "sheet": "", "channel": channel.get("name", ""),
+                    "dry_run": dry, "posts": [], "failures": [], "skipped": msg}
+        if not dry and count > free:
+            queue_note = (f"صف بافر {in_queue} از {max_queue} پر است، "
+                          f"پس به‌جای {count} پست، {free} پست ساخته می‌شود.")
+            log.warning(queue_note)
+            count = free
+
     if tg.enabled:
         head = (f"🗓 در حال زمان‌بندی {count} پست\n"
                 f"از {jalali.format_date(start)} تا "
                 f"{jalali.format_date(start + timedelta(days=count - 1))}")
         head += f"\nکانال: {channel.get('name')}"
+        if queue_note:
+            head += f"\n\nℹ️ {queue_note}"
         if dry:
             head += "\n\n⚠️ حالت آزمایشی — چیزی در بافر ثبت نمی‌شود."
         tg.text(head)
 
     scheduled: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
+    quota_hit: list[str] = []
 
-    # ۲) هر پست به‌محض آماده شدن، آپلود و زمان‌بندی می‌شود
+    # ۳) هر پست به‌محض آماده شدن، آپلود و زمان‌بندی می‌شود
     def handle(entry: dict[str, Any], total: int) -> None:
         if dry:
             log.info("  (آزمایشی) %s — %s", entry["when"], entry["title"])
             entry["urls"] = []
             scheduled.append(entry)
+            return
+
+        if quota_hit:
+            # صف پر شده — تلاش بی‌فایده نکن، ولی محتوا در پوشه می‌ماند
+            entry["error"] = "صف بافر پر شد؛ این پست ساخته شد ولی زمان‌بندی نشد."
+            failed.append(entry)
             return
 
         try:
@@ -79,6 +111,11 @@ def run_schedule(settings: Settings, *, count: int,
             entry["buffer_post_id"] = post.get("id")
             scheduled.append(entry)
             log.info("  ✅ در صف بافر: %s — %s", entry["when"], entry["title"])
+        except BufferQuotaError as e:
+            quota_hit.append(str(e))
+            entry["error"] = str(e)
+            failed.append(entry)
+            log.warning("  ⏸ صف بافر پر شد — بقیه‌ی پست‌ها زمان‌بندی نمی‌شوند.")
         except Exception as e:
             entry["error"] = str(e)
             failed.append(entry)
@@ -102,7 +139,11 @@ def run_schedule(settings: Settings, *, count: int,
             lines.append(f"• {p['when']} — {p['title']}")
         if len(scheduled) > 15:
             lines.append(f"… و {len(scheduled) - 15} پست دیگر")
-        if failed:
+        if quota_hit:
+            lines.append(f"\n⏸ صف بافر پر شد (سقف {max_queue} پست).")
+            lines.append("پست‌های ساخته‌شده در بایگانی گیت‌هاب هستند و از دست نرفته‌اند.")
+            lines.append("وقتی چند پست منتشر شد، دوباره اجرا کنید.")
+        elif failed:
             lines.append("\nپست‌های ناموفق:")
             for p in failed[:5]:
                 lines.append(f"✗ {p['when']} — {p.get('error', '')[:120]}")
