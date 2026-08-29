@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from typing import Any
 
@@ -134,6 +135,42 @@ def _anthropic(key: str, model: str, system: str, user: str,
 
 # ------------------------------------------------------- سازگار با OpenAI
 
+_RE_BAD_PARAM = re.compile(r"unsupported parameter:\s*'([^']+)'", re.I)
+_RE_USE_PARAM = re.compile(r"use\s*'([^']+)'\s*instead", re.I)
+_RE_BAD_VALUE = re.compile(r"unsupported value:\s*'([^']+)'", re.I)
+
+
+def _adapt_payload(payload: dict[str, Any], message: str,
+                   done: set[str]) -> str | None:
+    """درخواست را با ایرادی که خود سرویس گرفته تطبیق می‌دهد.
+
+    سرویس‌ها پارامترهایشان را عوض می‌کنند (مثلاً max_tokens به
+    max_completion_tokens). به‌جای اینکه اسم‌ها را در کد ثابت کنیم، پیام خطا
+    را می‌خوانیم و همان را اصلاح می‌کنیم. یک‌بار برای هر پارامتر.
+    """
+    bad = _RE_BAD_PARAM.search(message)
+    if bad:
+        name = bad.group(1)
+        if name in payload and f"param:{name}" not in done:
+            done.add(f"param:{name}")
+            value = payload.pop(name)
+            new = _RE_USE_PARAM.search(message)
+            if new:
+                payload[new.group(1)] = value
+                return f"{name} → {new.group(1)}"
+            return f"{name} حذف شد"
+
+    bad_val = _RE_BAD_VALUE.search(message)
+    if bad_val:
+        name = bad_val.group(1)
+        if name in payload and f"value:{name}" not in done:
+            done.add(f"value:{name}")
+            payload.pop(name)
+            return f"{name} حذف شد (مقدار پیش‌فرض سرویس استفاده می‌شود)"
+
+    return None
+
+
 def _openai_compatible(key: str, base_url: str, model: str, system: str,
                        user: str, max_tokens: int, temperature: float) -> str:
     url = f"{base_url}/chat/completions"
@@ -141,13 +178,18 @@ def _openai_compatible(key: str, base_url: str, model: str, system: str,
         "model": model,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
-        "max_tokens": max_tokens,
+        # مدل‌های جدید این اسم را می‌خواهند؛ اگر سرویس قدیمی بود، پایین‌تر
+        # خودکار به max_tokens برمی‌گردد.
+        "max_completion_tokens": max_tokens,
         "temperature": temperature,
     }
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     last = "خطای نامشخص"
+    adapted: set[str] = set()
 
-    for attempt in range(3):
+    attempt = -1
+    while attempt < 4:
+        attempt += 1
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=180)
         except requests.exceptions.InvalidHeader as e:
@@ -184,14 +226,21 @@ def _openai_compatible(key: str, base_url: str, model: str, system: str,
             raise LLMError(f"پاسخ سرویس JSON معتبر نبود ({r.status_code}): {r.text[:200]}")
 
         if "error" in body:
-            raise LLMError(f"سرویس خطا داد: {(body['error'] or {}).get('message', body['error'])}")
+            msg = str((body["error"] or {}).get("message", body["error"]))
+            # سرویس گفته کدام پارامتر را نمی‌پذیرد — همان را اصلاح کن و دوباره بفرست
+            fixed = _adapt_payload(payload, msg, adapted)
+            if fixed:
+                log.info("درخواست با نظر سرویس اصلاح شد: %s", fixed)
+                last = msg
+                continue
+            raise LLMError(f"سرویس خطا داد: {msg}")
 
         try:
             return body["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError):
             raise LLMError(f"ساختار پاسخ سرویس ناشناخته بود: {str(body)[:300]}")
 
-    raise LLMError(f"درخواست به مدل پس از ۳ تلاش ناموفق ماند — {last}")
+    raise LLMError(f"درخواست به مدل ناموفق ماند — {last}")
 
 
 def _friendly(e: Exception) -> str:
