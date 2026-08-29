@@ -53,6 +53,8 @@ class BufferClient:
     ENDPOINT = "https://api.buffer.com"
 
     def __init__(self, token: str, *, timeout: int = 60):
+        from .llm import clean_key   # همان تمیزکاری کلید، برای همین دلیل
+        token = clean_key(token or "")
         if not token:
             raise BufferError("BUFFER_ACCESS_TOKEN تنظیم نشده است.")
         self.token = token

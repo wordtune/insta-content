@@ -27,18 +27,54 @@ class LLMError(RuntimeError):
 
 # ---------------------------------------------------------------- انتخاب کلید
 
+# کاراکترهای نامرئی که موقع کپی‌کردن کلید از صفحه‌های وب یا متن راست‌به‌چپ
+# چسبیده می‌شوند و باعث خطای InvalidHeader می‌شوند.
+_INVISIBLE = dict.fromkeys(
+    [0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C,
+     0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069, 0xFEFF, 0x00A0], None
+)
+
+
+def clean_key(raw: str) -> str:
+    """کلید را از فاصله، خط جدید و کاراکترهای نامرئی پاک می‌کند.
+
+    چرا لازم است: هدر HTTP فقط کاراکترهای چاپی اَسکی می‌پذیرد. اگر موقع کپی
+    یک اینتر یا علامت جهت‌دهی متن فارسی وارد کلید شود، درخواست حتی ارسال هم
+    نمی‌شود و خطای گیج‌کننده‌ی InvalidHeader می‌دهد.
+    """
+    if not raw:
+        return ""
+    key = raw.translate(_INVISIBLE).strip()
+    # اگر کلید چند خط شده، فقط خط اول را بردار
+    if "\n" in key or "\r" in key:
+        key = key.replace("\r", "\n").split("\n")[0].strip()
+    return key
+
+
+def validate_key(key: str) -> None:
+    """اگر بعد از تمیزکاری هنوز کاراکتر نامعتبری مانده، خطای روشن بده."""
+    bad = [c for c in key if not (32 <= ord(c) <= 126)]
+    if bad:
+        preview = "، ".join(f"U+{ord(c):04X}" for c in dict.fromkeys(bad))
+        raise LLMError(
+            "کلید مدل زبانی کاراکتر نامعتبر دارد و قابل استفاده نیست "
+            f"({preview}). Secret را حذف کنید و کلید را دوباره از سایت سرویس "
+            "کپی کنید — مطمئن شوید فقط خودِ کلید کپی شده، بدون فاصله یا خط اضافه."
+        )
+
+
 def api_key(settings) -> str:
     """کلید را از متغیر محیطی مناسبِ ارائه‌دهنده می‌خواند.
 
     LLM_API_KEY همیشه کار می‌کند و بر بقیه اولویت دارد — این‌طور با هر
     سرویسی می‌شود کار کرد بدون اینکه اسم متغیر گیج‌کننده باشد.
     """
-    generic = os.getenv("LLM_API_KEY", "").strip()
+    generic = clean_key(os.getenv("LLM_API_KEY", ""))
     if generic:
         return generic
     if provider(settings) == "anthropic":
-        return os.getenv("ANTHROPIC_API_KEY", "").strip()
-    return os.getenv("OPENAI_API_KEY", "").strip()
+        return clean_key(os.getenv("ANTHROPIC_API_KEY", ""))
+    return clean_key(os.getenv("OPENAI_API_KEY", ""))
 
 
 def provider(settings) -> str:
@@ -56,6 +92,8 @@ def complete(settings, *, system: str, user: str) -> str:
             "کلید مدل زبانی تنظیم نشده است. متغیر LLM_API_KEY را بگذارید "
             "(یا ANTHROPIC_API_KEY / OPENAI_API_KEY بسته به سرویستان)."
         )
+
+    validate_key(key)
 
     kind = provider(settings)
     model = cfg.get("model") or ""
@@ -112,6 +150,13 @@ def _openai_compatible(key: str, base_url: str, model: str, system: str,
     for attempt in range(3):
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=180)
+        except requests.exceptions.InvalidHeader as e:
+            # این خطای شبکه نیست — یعنی خود کلید کاراکتر نامعتبر دارد
+            raise LLMError(
+                "کلید مدل زبانی کاراکتر نامعتبر دارد. Secret به نام LLM_API_KEY "
+                "را حذف کنید و کلید را دوباره از سایت سرویس کپی کنید — فقط خودِ "
+                "کلید، بدون فاصله یا خط خالی قبل و بعدش."
+            ) from e
         except requests.RequestException as e:
             last = f"اتصال به {base_url} برقرار نشد: {type(e).__name__}"
             time.sleep(5 * (attempt + 1))
