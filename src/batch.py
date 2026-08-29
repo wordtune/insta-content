@@ -77,7 +77,7 @@ def prepare_posts(settings: Settings, *, count: int, start: date,
 
         images = imagegen.build_images(
             settings.raw, data, post_id=post_id, out_dir=out_dir,
-            name_prefix=f"{i + 1:02d}",
+            name_prefix=f"{i + 1:02d}", plan_key=plan_item["key"],
         )
         db.attach_media(conn, post_id, [str(p) for p in images], [])
         db.advance_plan_index(conn, len(plan))

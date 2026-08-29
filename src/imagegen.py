@@ -1,6 +1,7 @@
 """ساخت تصویر پست: رندر قالب گرافیکی با Pillow و پشتیبانی کامل از متن فارسی (RTL)."""
 from __future__ import annotations
 
+import colorsys
 import random
 from pathlib import Path
 from typing import Any
@@ -83,12 +84,32 @@ def draw_rtl_block(draw: ImageDraw.ImageDraw, text: str, fnt: ImageFont.FreeType
     return y - top
 
 
-# ---------- پس‌زمینه ----------
+# ---------- رنگ ----------
 
 def _hex(c: str) -> tuple[int, int, int]:
     c = c.lstrip("#")
     return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore
 
+
+def _rgb(c: str) -> tuple[int, int, int]:
+    return _hex(c)
+
+
+def _mix(c: str, other: str, ratio: float) -> str:
+    a, b = _hex(c), _hex(other)
+    return "#%02x%02x%02x" % tuple(int(a[i] + (b[i] - a[i]) * ratio) for i in range(3))
+
+
+def _shift_hue(c: str, degrees: float) -> str:
+    """رنگ را کمی می‌چرخاند — برای تنوع بین پست‌ها بدون خروج از هویت برند."""
+    r, g, b = (v / 255 for v in _hex(c))
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+    h = (h + degrees / 360.0) % 1.0
+    r, g, b = colorsys.hls_to_rgb(h, l, s)
+    return "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
+
+
+# ---------- بافت و عمق پس‌زمینه ----------
 
 def gradient(size: int, top: str, bottom: str) -> Image.Image:
     t, b = _hex(top), _hex(bottom)
@@ -100,38 +121,92 @@ def gradient(size: int, top: str, bottom: str) -> Image.Image:
     return img.resize((size, size), Image.LANCZOS)
 
 
-def _mix(c: str, other: str, ratio: float) -> str:
-    a, b = _hex(c), _hex(other)
-    return "#%02x%02x%02x" % tuple(int(a[i] + (b[i] - a[i]) * ratio) for i in range(3))
+def _glow(size: int, center: tuple[float, float], radius: float,
+          color: str, strength: float = 0.55) -> Image.Image:
+    """هاله‌ی نرم رنگی — به تصویر عمق می‌دهد و از تخت بودن درش می‌آورد.
+
+    برای سرعت، در ابعاد کوچک ساخته و بزرگ می‌شود.
+    """
+    small = 96
+    layer = Image.new("L", (small, small), 0)
+    px = layer.load()
+    cx, cy = center[0] * small, center[1] * small
+    rad = radius * small
+    for y in range(small):
+        for x in range(small):
+            d = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+            if d < rad:
+                v = (1 - d / rad) ** 2.2
+                px[x, y] = int(255 * v * strength)
+    layer = layer.resize((size, size), Image.LANCZOS)
+    tint = Image.new("RGB", (size, size), _rgb(color))
+    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    out.paste(tint, (0, 0), layer)
+    return out
 
 
-def background(cfg: dict[str, Any], size: int, product_image: Path | None) -> Image.Image:
+def _dot_grid(size: int, color: str, spacing: int, radius: int,
+              alpha: int = 26) -> Image.Image:
+    """شبکه‌ی نقطه‌ای ظریف — حس کاغذ فنی و آکادمیک می‌دهد."""
+    layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    r, g, b = _rgb(color)
+    for y in range(spacing, size, spacing):
+        for x in range(spacing, size, spacing):
+            d.ellipse([x - radius, y - radius, x + radius, y + radius],
+                      fill=(r, g, b, alpha))
+    return layer
+
+
+def _corner_frame(draw: ImageDraw.ImageDraw, size: int, margin: int,
+                  color: str, length: int, width: int) -> None:
+    """دو گوشه‌ی L شکل — قاب سبک بدون شلوغی."""
+    d = draw
+    d.line([(margin, margin), (margin + length, margin)], fill=color, width=width)
+    d.line([(margin, margin), (margin, margin + length)], fill=color, width=width)
+    br = size - margin
+    d.line([(br - length, br), (br, br)], fill=color, width=width)
+    d.line([(br, br - length), (br, br)], fill=color, width=width)
+
+
+def background(cfg: dict[str, Any], size: int, product_image: Path | None,
+               accent: str, *, texture: bool = True) -> Image.Image:
     colors = cfg["brand"]["colors"]
-    base = gradient(size, colors["background"], _mix(colors["background"], colors["accent"], 0.22))
+    bg = colors["background"]
+    base = gradient(size, _mix(bg, "#000000", 0.25), _mix(bg, accent, 0.16))
 
     if product_image and product_image.exists():
         try:
             prod = Image.open(product_image).convert("RGB")
-            # پرکردن کادر با حفظ نسبت
             scale = max(size / prod.width, size / prod.height)
-            prod = prod.resize((int(prod.width * scale), int(prod.height * scale)), Image.LANCZOS)
+            prod = prod.resize((int(prod.width * scale), int(prod.height * scale)),
+                               Image.LANCZOS)
             left = (prod.width - size) // 2
             top = (prod.height - size) // 2
             prod = prod.crop((left, top, left + size, top + size))
-            prod = prod.filter(ImageFilter.GaussianBlur(radius=size // 90))
-            base = Image.blend(base, prod, 0.55)
+            prod = prod.filter(ImageFilter.GaussianBlur(radius=size // 70))
+            base = Image.blend(base, prod, 0.42)
         except Exception:
             pass
 
-    # سایه‌ی نرم از پایین به بالا، برای خوانایی متن روی هر پس‌زمینه‌ای
-    overlay = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    od = ImageDraw.Draw(overlay)
-    fade_start = int(size * 0.28)          # از کجا شروع به تیره شدن کند
-    span = size - fade_start
-    for y in range(fade_start, size):
-        r = (y - fade_start) / span
-        od.line([(0, y), (size, y)], fill=(0, 0, 0, int(205 * r ** 1.6)))
-    return Image.alpha_composite(base.convert("RGBA"), overlay).convert("RGB")
+    out = base.convert("RGBA")
+    # هاله‌ی رنگی بالا سمت راست + یک هاله‌ی سردتر پایین چپ
+    out = Image.alpha_composite(out, _glow(size, (0.78, 0.16), 0.72, accent, 0.42))
+    out = Image.alpha_composite(
+        out, _glow(size, (0.12, 0.9), 0.6, _mix(accent, "#FFFFFF", 0.4), 0.16))
+    if texture:
+        out = Image.alpha_composite(
+            out, _dot_grid(size, colors["text"], max(16, size // 34),
+                           max(1, size // 720)))
+
+    # تیرگی تدریجی پایین برای خوانایی متن
+    shade = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shade)
+    start = int(size * 0.30)
+    for y in range(start, size):
+        r = (y - start) / (size - start)
+        sd.line([(0, y), (size, y)], fill=(0, 0, 0, int(190 * r ** 1.5)))
+    return Image.alpha_composite(out, shade).convert("RGB")
 
 
 def _paste_logo(img: Image.Image, logo_path: str, size: int) -> None:
@@ -141,83 +216,242 @@ def _paste_logo(img: Image.Image, logo_path: str, size: int) -> None:
     try:
         logo = Image.open(p).convert("RGBA")
         target_w = int(size * 0.13)
-        logo = logo.resize((target_w, int(logo.height * target_w / logo.width)), Image.LANCZOS)
-        img.paste(logo, (int(size * 0.06), int(size * 0.06)), logo)
+        logo = logo.resize((target_w, int(logo.height * target_w / logo.width)),
+                           Image.LANCZOS)
+        img.paste(logo, (int(size * 0.07), int(size * 0.07)), logo)
     except Exception:
         pass
 
 
-# ---------- کارت پست ----------
+# ---------- اجزای مشترک ----------
 
-def render_card(cfg: dict[str, Any], *, headline: str, subline: str = "",
-                kicker: str = "", product_image: Path | None = None,
-                out_path: Path) -> Path:
-    size = int(cfg["image"]["size"])
+def _chip(draw: ImageDraw.ImageDraw, text: str, fnt: ImageFont.FreeTypeFont, *,
+          right: int, top: int, fill: str, ink: str, pad: int) -> int:
+    """برچسب گرد رنگی. ارتفاع مصرف‌شده را برمی‌گرداند."""
+    tw = text_width(draw, text, fnt)
+    draw.rounded_rectangle([right - tw - 2 * pad, top - pad,
+                            right, top + fnt.size + pad],
+                           radius=int(pad * 1.6), fill=fill)
+    draw_rtl(draw, text, fnt, right=right - pad, top=top, fill=ink)
+    return int(fnt.size + 2 * pad)
+
+
+def _progress_dots(draw: ImageDraw.ImageDraw, size: int, *, index: int, total: int,
+                   y: int, accent: str, muted: str) -> None:
+    """نشانگر اسلاید کاروسل — مخاطب می‌فهمد چند صفحه مانده."""
+    r = max(3, size // 190)
+    gap = r * 4
+    width = total * (2 * r) + (total - 1) * (gap - 2 * r)
+    x = (size - width) // 2 + r
+    for i in range(total):
+        active = (i + 1) == index
+        rr = r if active else int(r * 0.62)
+        draw.ellipse([x - rr, y - rr, x + rr, y + rr],
+                     fill=accent if active else muted)
+        x += gap
+
+
+def _brand_footer(draw: ImageDraw.ImageDraw, cfg: dict[str, Any], size: int,
+                  margin: int, accent: str) -> None:
     colors = cfg["brand"]["colors"]
-    img = background(cfg, size, product_image)
-    draw = ImageDraw.Draw(img)
-
-    margin = int(size * 0.085)
+    f_b = font("bold", int(size * 0.025))
     right = size - margin
-    max_w = size - 2 * margin
+    top = size - margin - f_b.size
+    draw.line([(right - int(size * 0.055), top - int(size * 0.022)),
+               (right, top - int(size * 0.022))],
+              fill=accent, width=max(3, size // 300))
+    draw_rtl(draw, cfg["brand"]["name"], f_b, right=right, top=top, fill=accent)
 
-    _paste_logo(img, cfg["image"].get("logo_path", ""), size)
 
-    # --- اندازه‌گیری قبل از رسم، تا کل بلوک از پایین لنگر بگیرد ---
-    f_k = font("bold", int(size * 0.028))
-    pad = int(size * 0.018)
-    kicker_h = int(f_k.size * 2.6) if kicker else 0
+def _fit_headline(draw: ImageDraw.ImageDraw, text: str, size: int, max_w: int,
+                  *, start: float, floor: float, max_lines: int
+                  ) -> tuple[ImageFont.FreeTypeFont, list[str]]:
+    f = font("black", int(size * start))
+    lines = wrap_rtl(draw, text, f, max_w)
+    while len(lines) > max_lines and f.size > int(size * floor):
+        f = font("black", f.size - 4)
+        lines = wrap_rtl(draw, text, f, max_w)
+    return f, lines
 
-    f_h = font("black", int(size * 0.074))
-    h_lines = wrap_rtl(draw, headline, f_h, max_w)
-    while len(h_lines) > 3 and f_h.size > int(size * 0.042):
-        f_h = font("black", f_h.size - 4)
-        h_lines = wrap_rtl(draw, headline, f_h, max_w)
-    head_lh = int(f_h.size * 1.32)
-    head_h = len(h_lines) * head_lh
 
-    f_s = font("regular", int(size * 0.036))
+# ---------- قالب‌ها ----------
+
+def _layout_editorial(img, draw, cfg, *, size, accent, headline, subline,
+                      kicker, margin) -> None:
+    """تیتر بزرگ پایین‌چین با نوار تأکید — قالب پیش‌فرض و خوانا."""
+    colors = cfg["brand"]["colors"]
+    right, max_w = size - margin, size - 2 * margin
+    pad = int(size * 0.017)
+
+    f_k = font("bold", int(size * 0.027))
+    f_h, h_lines = _fit_headline(draw, headline, size, max_w,
+                                 start=0.078, floor=0.044, max_lines=3)
+    head_lh = int(f_h.size * 1.30)
+    f_s = font("regular", int(size * 0.035))
     s_lines = wrap_rtl(draw, subline, f_s, max_w) if subline else []
-    sub_lh = int(f_s.size * 1.58)
-    sub_h = (len(s_lines) * sub_lh + int(size * 0.022)) if s_lines else 0
+    sub_lh = int(f_s.size * 1.55)
 
-    f_b = font("bold", int(size * 0.026))
-    brand_h = int(f_b.size * 2.6)
+    bar_h = int(size * 0.010)
+    block = ((int(f_k.size + 2 * pad) + int(size * 0.035)) if kicker else 0) \
+        + bar_h + int(size * 0.030) \
+        + len(h_lines) * head_lh \
+        + ((int(size * 0.024) + len(s_lines) * sub_lh) if s_lines else 0)
 
-    block_h = kicker_h + head_h + sub_h
-    y = size - margin - brand_h - block_h
-    y = max(y, int(size * 0.30))  # اگر متن خیلی بلند بود، بالاتر برو
+    y = max(size - margin - int(size * 0.075) - block, int(size * 0.26))
 
-    # --- رسم ---
     if kicker:
-        tw = text_width(draw, kicker, f_k)
-        draw.rounded_rectangle(
-            [right - tw - 2 * pad, y - pad, right, y + f_k.size + pad],
-            radius=pad, fill=colors["accent"])
-        draw_rtl(draw, kicker, f_k, right=right - pad, top=y, fill=colors["background"])
-        y += kicker_h
+        y += _chip(draw, kicker, f_k, right=right, top=y,
+                   fill=accent, ink=colors["background"], pad=pad)
+        y += int(size * 0.035)
+
+    # نوار تأکید کوتاه بالای تیتر
+    draw.rounded_rectangle([right - int(size * 0.11), y,
+                            right, y + bar_h], radius=bar_h // 2, fill=accent)
+    y += bar_h + int(size * 0.030)
 
     for line in h_lines:
         draw_rtl(draw, line, f_h, right=right, top=y, fill=colors["text"])
         y += head_lh
 
     if s_lines:
-        y += int(size * 0.022)
+        y += int(size * 0.024)
         for line in s_lines:
             draw_rtl(draw, line, f_s, right=right, top=y, fill=colors["muted"])
             y += sub_lh
 
-    # خط تزئینی + نام برند در پایین
-    line_y = size - margin - int(f_b.size * 1.5)
-    draw.line([(right - int(size * 0.05), line_y), (right, line_y)],
-              fill=colors["accent"], width=max(3, size // 300))
-    draw_rtl(draw, cfg["brand"]["name"], f_b, right=right,
-             top=size - margin - f_b.size, fill=colors["accent"])
+
+def _layout_statement(img, draw, cfg, *, size, accent, headline, subline,
+                      kicker, margin) -> None:
+    """تیتر وسط‌چین بین دو خط افقی — برای جملات کوتاه و قاطع."""
+    colors = cfg["brand"]["colors"]
+    max_w = int(size * 0.80)
+    cx = size // 2
+
+    f_h, h_lines = _fit_headline(draw, headline, size, max_w,
+                                 start=0.088, floor=0.048, max_lines=4)
+    head_lh = int(f_h.size * 1.28)
+    f_s = font("regular", int(size * 0.034))
+    s_lines = wrap_rtl(draw, subline, f_s, max_w) if subline else []
+    sub_lh = int(f_s.size * 1.55)
+
+    rule_gap = int(size * 0.045)
+    block = (len(h_lines) * head_lh
+             + 2 * rule_gap + 2 * max(2, size // 400)
+             + ((int(size * 0.028) + len(s_lines) * sub_lh) if s_lines else 0))
+    y = (size - block) // 2 - int(size * 0.03)
+
+    if kicker:
+        f_k = font("bold", int(size * 0.026))
+        kw = text_width(draw, kicker, f_k)
+        draw_rtl(draw, kicker, f_k, right=int(cx + kw / 2),
+                 top=y - int(size * 0.075), fill=accent)
+
+    rule_w = int(size * 0.14)
+    lw = max(2, size // 400)
+    draw.line([(cx - rule_w // 2, y), (cx + rule_w // 2, y)], fill=accent, width=lw)
+    y += rule_gap
+
+    for line in h_lines:
+        w = text_width(draw, line, f_h)
+        draw_rtl(draw, line, f_h, right=int(cx + w / 2), top=y, fill=colors["text"])
+        y += head_lh
+
+    if s_lines:
+        y += int(size * 0.028)
+        for line in s_lines:
+            w = text_width(draw, line, f_s)
+            draw_rtl(draw, line, f_s, right=int(cx + w / 2), top=y,
+                     fill=colors["muted"])
+            y += sub_lh
+        y += int(size * 0.010)
+
+    y += rule_gap - int(size * 0.020)
+    draw.line([(cx - rule_w // 2, y), (cx + rule_w // 2, y)], fill=accent, width=lw)
+
+
+def _layout_numbered(img, draw, cfg, *, size, accent, headline, subline,
+                     kicker, margin, number: str) -> None:
+    """شماره‌ی درشت در دایره + تیتر — برای اسلایدهای کاروسل."""
+    colors = cfg["brand"]["colors"]
+    right, max_w = size - margin, size - 2 * margin
+
+    # دایره‌ی شماره
+    d_size = int(size * 0.135)
+    cx, cy = right - d_size // 2, int(size * 0.235)
+    draw.ellipse([cx - d_size // 2, cy - d_size // 2,
+                  cx + d_size // 2, cy + d_size // 2],
+                 outline=accent, width=max(3, size // 280))
+    f_n = font("black", int(d_size * 0.50))
+    nw = text_width(draw, number, f_n)
+    draw_rtl(draw, number, f_n, right=int(cx + nw / 2),
+             top=cy - int(f_n.size * 0.62), fill=accent)
+
+    f_h, h_lines = _fit_headline(draw, headline, size, max_w,
+                                 start=0.072, floor=0.042, max_lines=3)
+    head_lh = int(f_h.size * 1.30)
+    f_s = font("regular", int(size * 0.034))
+    s_lines = wrap_rtl(draw, subline, f_s, max_w) if subline else []
+    sub_lh = int(f_s.size * 1.55)
+
+    block = (len(h_lines) * head_lh
+             + ((int(size * 0.026) + len(s_lines) * sub_lh) if s_lines else 0))
+    y = max(size - margin - int(size * 0.095) - block, int(size * 0.40))
+
+    for line in h_lines:
+        draw_rtl(draw, line, f_h, right=right, top=y, fill=colors["text"])
+        y += head_lh
+    if s_lines:
+        y += int(size * 0.026)
+        for line in s_lines:
+            draw_rtl(draw, line, f_s, right=right, top=y, fill=colors["muted"])
+            y += sub_lh
+
+
+LAYOUTS = ("editorial", "statement", "numbered")
+
+
+def render_card(cfg: dict[str, Any], *, headline: str, subline: str = "",
+                kicker: str = "", product_image: Path | None = None,
+                out_path: Path, layout: str = "editorial",
+                accent: str | None = None,
+                index: int | None = None, total: int | None = None) -> Path:
+    size = int(cfg["image"]["size"])
+    colors = cfg["brand"]["colors"]
+    accent = accent or colors["accent"]
+    margin = int(size * 0.088)
+
+    img = background(cfg, size, product_image, accent)
+    draw = ImageDraw.Draw(img)
+
+    _corner_frame(draw, size, int(margin * 0.62), _mix(colors["muted"], colors["background"], 0.45),
+                  length=int(size * 0.055), width=max(2, size // 460))
+    _paste_logo(img, cfg["image"].get("logo_path", ""), size)
+
+    if layout == "statement":
+        _layout_statement(img, draw, cfg, size=size, accent=accent, headline=headline,
+                          subline=subline, kicker=kicker, margin=margin)
+    elif layout == "numbered" and index:
+        _layout_numbered(img, draw, cfg, size=size, accent=accent, headline=headline,
+                         subline=subline, kicker=kicker, margin=margin,
+                         number=jalali_digits(index))
+    else:
+        _layout_editorial(img, draw, cfg, size=size, accent=accent, headline=headline,
+                          subline=subline, kicker=kicker, margin=margin)
+
+    if index and total and total > 1:
+        _progress_dots(draw, size, index=index, total=total,
+                       y=size - int(margin * 0.55), accent=accent,
+                       muted=_mix(colors["muted"], colors["background"], 0.55))
+
+    _brand_footer(draw, cfg, size, margin, accent)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # اینستاگرام فقط JPEG می‌پذیرد
     img.convert("RGB").save(out_path, "JPEG", quality=92, optimize=True)
     return out_path
+
+
+def jalali_digits(n: int) -> str:
+    return str(n).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
 
 
 def pick_product(cfg: dict[str, Any]) -> Path | None:
@@ -229,32 +463,64 @@ def pick_product(cfg: dict[str, Any]) -> Path | None:
     return random.choice(files) if files else None
 
 
+# قالب بصری هر نوع پست. هدف: فید یکنواخت نشود ولی هویت برند حفظ شود.
+PLAN_LAYOUT = {
+    "product_spotlight": "editorial",
+    "offer":             "editorial",
+    "trust":             "editorial",
+    "behind_scenes":     "editorial",
+    "myth_buster":       "statement",
+    "ethics":            "statement",
+    "tip":               "numbered",
+    "comparison":        "numbered",
+    "faq":               "numbered",
+}
+
+# چرخش ملایم رنگ تأکید — تنوع بدون خروج از هویت برند
+PLAN_HUE = {
+    "tip": -14, "comparison": 10, "faq": -6,
+    "myth_buster": 18, "ethics": -20, "trust": 6,
+    "product_spotlight": 0, "offer": 14, "behind_scenes": 0,
+}
+
+
 def build_images(cfg: dict[str, Any], content: dict[str, Any], *,
                  post_id: int, out_dir: Path,
-                 name_prefix: str | None = None) -> list[Path]:
+                 name_prefix: str | None = None,
+                 plan_key: str = "") -> list[Path]:
     """بر اساس محتوا، یک یا چند تصویر می‌سازد و مسیرها را برمی‌گرداند."""
     product = pick_product(cfg)
     paths: list[Path] = []
     stem = name_prefix or f"post_{post_id:05d}"
 
+    base_accent = cfg["brand"]["colors"]["accent"]
+    accent = _shift_hue(base_accent, PLAN_HUE.get(plan_key, 0))
+    layout = PLAN_LAYOUT.get(plan_key, "editorial")
+
     if "slides" in content:  # کاروسل
-        for i, slide in enumerate(content["slides"], 1):
+        slides = content["slides"]
+        total = len(slides)
+        for i, slide in enumerate(slides, 1):
             p = out_dir / f"{stem}_{i:02d}.jpg"
+            # اسلاید اول جلد است: تیتر وسط‌چین و بدون شماره
+            first = i == 1
             render_card(cfg,
                         headline=slide.get("headline", ""),
                         subline=slide.get("subline", ""),
-                        kicker=slide.get("kicker", ""),
-                        product_image=product if i == 1 else None,
-                        out_path=p)
+                        kicker="" if first else slide.get("kicker", ""),
+                        product_image=product if first else None,
+                        out_path=p,
+                        layout="statement" if first else layout,
+                        accent=accent, index=i, total=total)
             paths.append(p)
     else:  # تک‌تصویر
         p = out_dir / f"{stem}_01.jpg"
         render_card(cfg,
                     headline=content.get("headline", content.get("title", "")),
                     subline=content.get("subline", ""),
-                    kicker="",
+                    kicker=content.get("kicker", ""),
                     product_image=product,
-                    out_path=p)
+                    out_path=p, layout=layout, accent=accent)
         paths.append(p)
 
     return paths

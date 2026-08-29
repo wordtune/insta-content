@@ -55,20 +55,32 @@ def _extract_json(text: str) -> dict[str, Any]:
     return json.loads(text[start:end + 1])
 
 
+_CATALOG_FIELDS = [
+    ("category", "دسته"),
+    ("price", "قیمت"),
+    ("duration", "مدت"),
+    ("what_customer_gets", "مشتری چه تحویل می‌گیرد"),
+    ("authorized", "وضعیت نمایندگی"),
+    ("guarantee", "گارانتی"),
+    ("best_for", "مناسب برای"),
+    ("note", "نکته"),
+]
+
+
 def _catalog_block(catalog: list[dict[str, Any]]) -> str:
     if not catalog:
         return "(کاتالوگ محصولی ارائه نشده — محتوای عمومی مرتبط با حوزه پیج بنویس.)"
-    lines = []
+    blocks = []
     for p in catalog:
-        bits = [f"- {p.get('name', '')}"]
-        if p.get("price"):
-            bits.append(f"قیمت: {p['price']}")
+        lines = [f"### {p.get('name', '')}"]
+        for key, label in _CATALOG_FIELDS:
+            value = p.get(key)
+            if value:
+                lines.append(f"{label}: {value}")
         if p.get("features"):
-            bits.append("ویژگی‌ها: " + "، ".join(p["features"]))
-        if p.get("note"):
-            bits.append(p["note"])
-        lines.append(" | ".join(bits))
-    return "\n".join(lines)
+            lines.append("ویژگی‌ها: " + "، ".join(p["features"]))
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
 
 
 def generate(settings, plan_item: dict[str, Any], *, recent_titles: list[str],
