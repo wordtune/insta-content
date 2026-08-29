@@ -3,32 +3,32 @@
     "_راهنما": "هر خطی که با ??? باشد را با اطلاعات واقعی جایگزین کنید. تا وقتی ??? باقی باشد، «python main.py doctor» هشدار می‌دهد و نباید dry_run را خاموش کنید.",
 
     "name": "Grammarly Premium",
-    "price": "??? تومان",
-    "duration": "??? (مثلاً: ۱۲ ماهه)",
-    "what_customer_gets": "??? — دقیقاً چه چیزی تحویل می‌گیرد؟ اکانت شخصی روی ایمیل خودش، یا نام کاربری و رمز آماده؟",
-    "authorized": "??? — آیا برای این قلم نمایندگی یا مجوز رسمی دارید؟ اگر بله، از چه شرکتی و از چه تاریخی",
-    "features": ["???", "???", "???"],
-    "guarantee": "??? — اگر اکانت قطع شد چه اتفاقی می‌افتد؟ تعویض، بازگشت وجه، یا هیچ‌کدام",
-    "note": "??? — هر محدودیتی که مشتری باید از قبل بداند"
+    "price": "800000 تومان",
+    "duration": "12 ماهه (مثلاً: ۱۲ ماهه)",
+    "what_customer_gets": "نام کاربری و رمز آماده",
+    "authorized": "شرکت grammarly",
+    "features": [""],
+    "guarantee": "گارانتی تا اخرین روز ",
+    "note": "فقط روی یک دستگاه و یا سیستم میتونند استفاده بکنند و رمز رو تغییر ندهند"
   },
   {
     "name": "ChatGPT Plus",
-    "price": "??? تومان",
-    "duration": "???",
-    "what_customer_gets": "???",
-    "authorized": "???",
-    "features": ["???", "???"],
-    "guarantee": "???",
-    "note": "???"
+    "price": "3800000 تومان",
+    "duration": "یک ماهه",
+    "what_customer_gets": "فعالسازی روی ایمیل خودش",
+    "authorized": "Open Ai",
+    "features": [""],
+    "guarantee": "30 روز",
+    "note": ""
   },
   {
     "name": "QuillBot Premium",
-    "price": "??? تومان",
-    "duration": "???",
-    "what_customer_gets": "???",
-    "authorized": "???",
-    "features": ["???", "???"],
-    "guarantee": "???",
-    "note": "???"
+    "price": "600000 تومان",
+    "duration": "یکسال",
+    "what_customer_gets": "ایمیل و پسورد ",
+    "authorized": "Quillbot",
+    "features": [""],
+    "guarantee": "یکسال",
+    "note": ""
   }
 ]
