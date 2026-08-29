@@ -12,6 +12,7 @@
         python main.py schedule              # ۷ پست برای یک هفته
         python main.py schedule --count 30   # یک ماه
         python main.py channels              # فهرست کانال‌های بافر
+        python main.py compare               # مقایسه‌ی کیفیت فارسی چند مدل
 
   ▸ batch — بدون هیچ سرویس واسطی (پشتیبان)
     محتوا در تلگرام تحویل داده می‌شود و خودتان در اپ اینستاگرام زمان‌بندی می‌کنید.
@@ -119,6 +120,58 @@ def cmd_schedule(args, settings) -> int:
     return 1 if result["failed"] else 0
 
 
+def cmd_compare(args, settings) -> int:
+    """همان پست را با چند مدل می‌سازد تا کیفیت فارسی را کنار هم ببینید."""
+    import time
+
+    from src import content as content_mod
+    from src.pipeline import load_catalog
+
+    models = [m.strip() for m in args.models.split(",") if m.strip()]
+    plan = settings["content_plan"]
+    matches = [p for p in plan if p["key"] == args.plan] if args.plan else plan
+    if not matches:
+        print(f"plan_key نامعتبر: {args.plan}", file=sys.stderr)
+        return 1
+    plan_item = matches[0]
+
+    catalog = load_catalog()
+    original = settings.raw["llm"].get("model")
+    print(f"\nنوع پست: {plan_item['label']}  ·  مدل‌ها: {len(models)}")
+    print("همه با یک بریف و یک کاتالوگ ساخته می‌شوند تا مقایسه منصفانه باشد.\n")
+
+    for m in models:
+        settings.raw["llm"]["model"] = m
+        print("=" * 66)
+        print(f"مدل: {m}")
+        print("=" * 66)
+        t0 = time.time()
+        try:
+            data = content_mod.generate(settings, plan_item,
+                                        recent_titles=[], catalog=catalog)
+        except Exception as e:
+            print(f"  ✗ ناموفق: {e}\n")
+            continue
+        took = time.time() - t0
+
+        if "slides" in data:
+            for i, s in enumerate(data["slides"], 1):
+                print(f"  اسلاید {i}: {s.get('headline', '')}")
+                if s.get("subline"):
+                    print(f"            {s['subline']}")
+        else:
+            print(f"  تیتر روی تصویر: {data.get('headline', '')}")
+            if data.get("subline"):
+                print(f"  زیرنویس:        {data['subline']}")
+        print(f"\n  --- کپشن ---\n{data['caption']}\n")
+        print(f"  ({took:.1f} ثانیه)\n")
+
+    settings.raw["llm"]["model"] = original
+    print("=" * 66)
+    print("هرکدام را که پسندیدید، در config.yaml بخش llm.model بگذارید.")
+    return 0
+
+
 def cmd_channels(args, settings) -> int:
     client = BufferClient(settings.buffer_token)
     orgs = client.organizations()
@@ -178,6 +231,19 @@ def cmd_doctor(args, settings) -> int:
     else:
         print("  ✓ همه‌ی متغیرهای لازم تنظیم شده‌اند.")
 
+    # مدل زبانی — یک درخواست کوچک واقعی می‌فرستیم تا آدرس و نام مدل هم تست شود
+    from src import llm as _llm
+    cfg = settings.get("llm", {}) or {}
+    print(f"\n  مدل: {cfg.get('model')} · سرویس: {_llm.provider(settings)}"
+          + (f" · {cfg.get('base_url')}" if _llm.provider(settings) != "anthropic" else ""))
+    if _llm.api_key(settings) and cfg.get("model"):
+        try:
+            reply = _llm.healthcheck(settings)
+            print(f"  ✓ مدل زبانی پاسخ داد: «{reply}»")
+        except Exception as e:
+            print(f"  ✗ مدل زبانی: {e}")
+            problems.append("اتصال به مدل زبانی برقرار نشد.")
+
     # تلگرام: در حالت batch حیاتی است، در بقیه فقط برای گزارش
     if settings.telegram_bot_token and settings.telegram_chat_id:
         from src.telegram import from_settings as _tg
@@ -209,7 +275,22 @@ def cmd_doctor(args, settings) -> int:
             print(f"  ✗ بافر: {e}")
             problems.append("اتصال به بافر برقرار نشد.")
 
-    print(f"\n  تعداد الگوهای محتوایی: {len(settings['content_plan'])}")
+    # کاتالوگ — تنها منبع مجاز قیمت و ویژگی، پس باید تمیز باشد
+    from src.pipeline import check_catalog
+    cat_problems = check_catalog()
+    if cat_problems:
+        print("\n  ✗ کاتالوگ هنوز آماده نیست:")
+        for c in cat_problems[:10]:
+            print("      -", c)
+        if len(cat_problems) > 10:
+            print(f"      … و {len(cat_problems) - 10} مورد دیگر")
+        if not settings.dry_run:
+            problems.append("کاتالوگ ناقص است ولی dry_run خاموش است — "
+                            "اطلاعات ناقص در پست واقعی منتشر می‌شود.")
+    else:
+        print("\n  ✓ کاتالوگ کامل است.")
+
+    print(f"  تعداد الگوهای محتوایی: {len(settings['content_plan'])}")
     print(f"  حالت آزمایشی (dry_run): {settings.dry_run}")
     if mode in ("buffer", "api"):
         print(f"  میزبانی تصویر: {settings.get('storage', {}).get('provider')}")
@@ -290,6 +371,14 @@ def main() -> int:
 
     sub.add_parser("channels", help="فهرست کانال‌های وصل‌شده به بافر")
 
+    p_cmp = sub.add_parser(
+        "compare", help="ساخت یک پست با چند مدل، برای مقایسه‌ی کیفیت فارسی")
+    p_cmp.add_argument("--models",
+                       default="gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol",
+                       help="نام مدل‌ها با کاما")
+    p_cmp.add_argument("--plan", default=None,
+                       help="نوع پست؛ پیش‌فرض اولین مورد تقویم محتوایی")
+
     p_batch = sub.add_parser(
         "batch", help="ساخت یک‌جای محتوای چند هفته و ارسال به تلگرام")
     p_batch.add_argument("--count", type=int, default=30,
@@ -323,7 +412,8 @@ def main() -> int:
         args.command = "run"
 
     handlers = {
-        "schedule": cmd_schedule, "channels": cmd_channels, "batch": cmd_batch,
+        "schedule": cmd_schedule, "channels": cmd_channels,
+        "compare": cmd_compare, "batch": cmd_batch,
         "run": cmd_run, "doctor": cmd_doctor, "quota": cmd_quota,
         "refresh-token": cmd_refresh_token, "history": cmd_history,
     }
