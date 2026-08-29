@@ -1,0 +1,94 @@
+name: زمان‌بندی هفتگی پست‌ها
+
+# هر شنبه صبح ۷ پست می‌سازد، تصاویر را آپلود می‌کند و در صف بافر می‌گذارد.
+# بافر بعد هر روز رأس ساعت روی اینستاگرام منتشر می‌کند. هیچ کار دستی‌ای نمی‌ماند.
+on:
+  schedule:
+    # ۹:۰۰ صبح شنبه به وقت تهران = ۵:۳۰ UTC
+    - cron: "30 5 * * 6"
+
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "چند پست؟ (۷ = یک هفته، ۳۰ = یک ماه)"
+        required: false
+        default: "7"
+      start:
+        description: "تاریخ شروع به میلادی، مثل 2026-09-05 (خالی = فردا)"
+        required: false
+      dry_run:
+        description: "فقط تست — بساز ولی در بافر ثبت نکن"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write        # برای آپلود تصاویر در شاخه‌ی media و ذخیره‌ی حافظه
+
+concurrency:
+  group: content-schedule
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: نصب کتابخانه‌ها
+        run: pip install -r requirements.txt
+
+      - name: بررسی سلامت پیکربندی
+        env:
+          LLM_API_KEY:         ${{ secrets.LLM_API_KEY }}
+          BUFFER_ACCESS_TOKEN: ${{ secrets.BUFFER_ACCESS_TOKEN }}
+          TELEGRAM_BOT_TOKEN:  ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN:            ${{ secrets.GITHUB_TOKEN }}
+        run: python main.py doctor
+
+      - name: ساخت و زمان‌بندی
+        env:
+          LLM_API_KEY:         ${{ secrets.LLM_API_KEY }}
+          BUFFER_ACCESS_TOKEN: ${{ secrets.BUFFER_ACCESS_TOKEN }}
+          TELEGRAM_BOT_TOKEN:  ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
+          # این را گیت‌هاب خودش می‌سازد — لازم نیست جایی تعریفش کنید
+          GH_TOKEN:            ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.dry_run && '1' || '0') || '' }}
+        run: |
+          python main.py schedule \
+            --count "${{ inputs.count || '7' }}" \
+            ${{ inputs.start && format('--start {0}', inputs.start) || '' }} \
+            | tee run.log
+          {
+            echo "## نتیجه"
+            echo '```'
+            cat run.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: ذخیره‌ی حافظه‌ی پست‌ها
+        if: always()
+        run: |
+          if [ -f state.db ]; then
+            git config user.name  "content-bot"
+            git config user.email "bot@users.noreply.github.com"
+            git add -f state.db
+            git diff --cached --quiet || git commit -m "حافظه‌ی پست‌ها — $(date +%F)"
+            git pull --rebase --autostash || true
+            git push
+          fi
+
+      - name: بایگانی تصاویر و کپشن‌ها
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: بسته-محتوا-${{ github.run_number }}
+          path: output/
+          retention-days: 30
+          if-no-files-found: ignore
